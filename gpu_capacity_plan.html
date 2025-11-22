@@ -1,0 +1,755 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GenAI Inference Capacity Planner</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body { font-family: 'Inter', sans-serif; background-color: #0f172a; color: #e2e8f0; }
+        .card { background-color: #1e293b; border: 1px solid #334155; }
+        input, select { background-color: #334155; border-color: #475569; color: white; outline: none; }
+        /* Custom scrollbar */
+        ::-webkit-scrollbar { width: 8px; }
+        ::-webkit-scrollbar-track { background: #1e293b; }
+        ::-webkit-scrollbar-thumb { background: #475569; border-radius: 4px; }
+    </style>
+</head>
+<body class="p-4 md:p-8 max-w-[1400px] mx-auto">
+
+    <header class="mb-6">
+        <div class="flex items-center justify-between">
+            <div>
+                <h1 class="text-3xl font-bold text-blue-400 tracking-tight">⚡ GenAI Inference Capacity Planner</h1>
+                <p class="text-gray-400 text-sm mt-1">
+                    Full-Stack Estimator: <span class="text-purple-400">Latency (TTFT)</span> + <span class="text-blue-400">Speed (T/s)</span> + <span class="text-green-400">Capacity (VRAM)</span>
+                    <span class="ml-2 text-gray-500 border-l border-gray-600 pl-2">Created by Transformer-Zhou</span>
+                </p>
+            </div>
+            <div class="hidden md:block text-right">
+                <div class="text-[10px] text-gray-500 font-mono bg-slate-800 px-2 py-1 rounded border border-slate-700">
+                    Includes Auto-Efficiency Penalty for Multi-Node/PCIe
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <div class="grid grid-cols-1 lg:grid-cols-12 gap-6">
+        
+        <!-- LEFT: INPUTS -->
+        <div class="lg:col-span-4 space-y-5">
+            
+            <!-- 1. Model -->
+            <div class="card p-5 rounded-xl shadow-lg border-t-4 border-purple-500">
+                <h2 class="text-sm font-bold text-gray-100 uppercase mb-3">1. Model Architecture</h2>
+                
+                <select id="modelSelect" class="w-full p-2 rounded text-sm mb-4" onchange="applyModelPreset()">
+                    <option value="deepseek_r1">DeepSeek-V3/R1 (671B MoE)</option>
+                    <option value="qwen_32b">Qwen-32B (Dense)</option>
+                    <option value="custom">Custom...</option>
+                </select>
+
+                <div class="flex gap-2 mb-4 bg-slate-800 p-1.5 rounded">
+                    <label class="flex-1 text-center cursor-pointer">
+                        <input type="radio" name="archType" value="dense" class="hidden peer" onchange="toggleMoeInputs()">
+                        <span class="block px-2 py-1 rounded text-xs peer-checked:bg-blue-600 peer-checked:text-white text-gray-400 transition-all">Dense</span>
+                    </label>
+                    <label class="flex-1 text-center cursor-pointer">
+                        <input type="radio" name="archType" value="moe" checked class="hidden peer" onchange="toggleMoeInputs()">
+                        <span class="block px-2 py-1 rounded text-xs peer-checked:bg-purple-600 peer-checked:text-white text-gray-400 transition-all">MoE</span>
+                    </label>
+                </div>
+
+                <div class="grid grid-cols-2 gap-3 mb-3">
+                    <div>
+                        <label class="text-[10px] text-gray-400 uppercase font-bold">Total Params</label>
+                        <div class="flex items-center gap-1">
+                            <input type="number" id="totalParams" class="w-full p-2 rounded text-sm font-mono bg-slate-700 border-none" value="671" oninput="calculate()">
+                            <span class="text-xs text-gray-500">B</span>
+                        </div>
+                    </div>
+                    <div id="activeParamContainer">
+                        <label class="text-[10px] text-gray-400 uppercase font-bold text-purple-300">Active Params</label>
+                        <div class="flex items-center gap-1">
+                            <input type="number" id="activeParams" class="w-full p-2 rounded text-sm font-mono text-purple-300 bg-purple-900/20 border border-purple-500/30" value="37" oninput="calculate()">
+                            <span class="text-xs text-gray-500">B</span>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="flex items-center justify-between pt-2 border-t border-gray-700">
+                    <label class="text-xs text-gray-400">MLA / KV Cache Opt</label>
+                    <input type="checkbox" id="useMla" checked class="accent-green-500 w-4 h-4" onchange="calculate()">
+                </div>
+                <input type="hidden" id="mLayers" value="61"><input type="hidden" id="mHidden" value="7168">
+            </div>
+
+            <!-- 2. Hardware -->
+            <div class="card p-5 rounded-xl shadow-lg border-t-4 border-blue-500">
+                <h2 class="text-sm font-bold text-gray-100 uppercase mb-3">2. Infrastructure</h2>
+                <select id="gpuSelect" class="w-full p-3 rounded mb-2 text-sm" onchange="calculate()">
+                    <option value="h20" selected>🇨🇳 NVIDIA H20 (96GB, NVLink)</option>
+                    <option value="h100_sxm">🇺🇸 NVIDIA H100 SXM (80GB, NVLink)</option>
+                    <option value="h800">🇨🇳 NVIDIA H800 (80GB, NVLink)</option>
+                    <option value="h200">🇺🇸 NVIDIA H200 (141GB, NVLink)</option>
+                </select>
+                <div id="gpuSpecsDisplay" class="text-[10px] text-gray-400 font-mono px-1 mb-3"></div>
+
+                <!-- Precision Selection (NEW) -->
+                <label class="text-[10px] text-gray-400 uppercase font-bold mb-2 block">Precision</label>
+                <select id="precisionSelect" class="w-full p-2 rounded text-sm mb-2" onchange="calculate()">
+                    <option value="bf16" selected>BF16 (2 bytes/param)</option>
+                    <option value="fp8">FP8 (1 byte/param)</option>
+                    <option value="int8">INT8 (1 byte/param)</option>
+                    <option value="int4">INT4 (0.5 bytes/param)</option>
+                </select>
+                
+                <!-- Manual GPU Count (NEW) -->
+                <label class="text-[10px] text-gray-400 uppercase font-bold mb-2 block">Force GPU Count (Optional)</label>
+                <div class="flex items-center gap-2">
+                    <input type="number" id="customGpus" placeholder="Auto (Min)" class="w-full p-2 rounded text-sm bg-slate-700 border border-slate-600 focus:border-blue-500 transition-colors" oninput="calculate()">
+                    <div class="text-[10px] text-gray-500 whitespace-nowrap">GPUs</div>
+                </div>
+                <p class="text-[10px] text-gray-500 mt-1">Override to compare FP8 vs BF16 on same hardware.</p>
+            </div>
+
+            <!-- 3. Traffic -->
+            <div class="card p-5 rounded-xl shadow-lg">
+                <h2 class="text-sm font-bold text-gray-100 uppercase mb-3">3. Workload</h2>
+                <div class="space-y-4">
+                    <div>
+                        <div class="flex justify-between text-xs mb-1">
+                            <span class="text-gray-400">Input (Prefill)</span>
+                            <span class="text-white font-mono" id="dispInput">1024</span>
+                        </div>
+                        <input type="range" id="inputTokens" min="128" max="16000" step="128" value="1024" class="w-full h-1 bg-gray-600 rounded-lg appearance-none cursor-pointer" oninput="syncRange('inputTokens', 'dispInput'); calculate()">
+                    </div>
+                    <div>
+                        <div class="flex justify-between text-xs mb-1">
+                            <span class="text-gray-400">Output (Decode)</span>
+                            <span class="text-white font-mono" id="dispOutput">512</span>
+                        </div>
+                        <input type="range" id="outputTokens" min="64" max="4096" step="64" value="512" class="w-full h-1 bg-gray-600 rounded-lg appearance-none cursor-pointer" oninput="syncRange('outputTokens', 'dispOutput'); calculate()">
+                    </div>
+                    <div class="grid grid-cols-2 gap-3">
+                        <div>
+                            <label class="text-xs text-gray-500">Batch Size</label>
+                            <input type="number" id="batchSize" class="w-full p-2 rounded text-sm" value="32" oninput="calculate()">
+                        </div>
+                        <div>
+                            <label class="text-xs text-gray-500">Target RPS</label>
+                            <input type="number" id="targetRPS" class="w-full p-2 rounded text-sm text-yellow-300 font-bold" value="10" oninput="calculate()">
+                            <div id="concurrencyDisplay" class="text-[10px] text-gray-400 mt-1 text-right font-mono">≈ - Concurrent</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Export Button (NEW) -->
+                <button onclick="exportConfig()" class="w-full mt-4 p-3 rounded-lg bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-500 hover:to-blue-500 text-white font-bold text-sm transition-all">
+                    💾 Export Config (JSON)
+                </button>
+
+                <!-- Save Config Button (NEW) -->
+                <button onclick="saveConfigForComparison()" class="w-full mt-2 p-3 rounded-lg bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-500 hover:to-pink-500 text-white font-bold text-sm transition-all">
+                    📌 Save for Comparison
+                </button>
+
+                <!-- Show Comparison Button (NEW) -->
+                <button onclick="toggleComparisonView()" class="w-full mt-2 p-3 rounded-lg bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-bold text-sm transition-all" id="compareBtn">
+                    🔀 Show Comparison
+                </button>
+            </div>
+        </div>
+
+        <!-- RIGHT: RESULTS -->
+        <div class="lg:col-span-8 space-y-6">
+            
+            <!-- Status Bar -->
+            <div class="flex gap-3 overflow-x-auto pb-1">
+                <div class="bg-slate-800 px-3 py-2 rounded border border-slate-700 min-w-[100px]">
+                    <div class="text-[10px] text-gray-500 uppercase">Topology</div>
+                    <div class="text-xs font-bold text-white whitespace-nowrap" id="topoDisplay">-</div>
+                </div>
+                <div class="bg-slate-800 px-3 py-2 rounded border border-slate-700 min-w-[100px]">
+                    <div class="text-[10px] text-gray-500 uppercase">Efficiency</div>
+                    <div class="text-xs font-bold text-yellow-400" id="effDisplay">- %</div>
+                </div>
+                <div class="bg-slate-800 px-3 py-2 rounded border border-slate-700 min-w-[100px]">
+                    <div class="text-[10px] text-gray-500 uppercase">Strategy</div>
+                    <div class="text-xs font-bold text-purple-400 whitespace-nowrap" id="strategyDisplay">-</div>
+                </div>
+            </div>
+
+            <!-- Main KPIs (5 Columns) -->
+            <div class="grid grid-cols-2 md:grid-cols-5 gap-3">
+                <!-- 1. Capacity -->
+                <div class="card p-4 rounded-xl border-b-4 border-green-500 bg-gradient-to-b from-slate-800 to-slate-900">
+                    <div class="text-[10px] text-gray-400 uppercase font-bold">Min GPUs</div>
+                    <div class="text-3xl font-bold text-white mt-1" id="resMinGpus">-</div>
+                    <div class="text-[10px] text-gray-500 mt-1">Capacity (VRAM)</div>
+                </div>
+                
+                <!-- 2. Latency -->
+                <div class="card p-4 rounded-xl border-b-4 border-purple-500 bg-gradient-to-b from-slate-800 to-slate-900">
+                    <div class="text-[10px] text-gray-400 uppercase font-bold">TTFT (Wait)</div>
+                    <div class="text-3xl font-bold text-purple-300 mt-1" id="resTtft">-</div>
+                    <div class="text-[10px] text-gray-500 mt-1">Prefill Phase</div>
+                </div>
+
+                <!-- 3. Speed (RESTORED) -->
+                <div class="card p-4 rounded-xl border-b-4 border-blue-500 bg-gradient-to-b from-slate-800 to-slate-900 relative overflow-hidden">
+                    <div class="absolute top-0 right-0 p-1 opacity-10 text-6xl">⚡</div>
+                    <div class="text-[10px] text-gray-400 uppercase font-bold">Gen Speed</div>
+                    <div class="text-3xl font-bold text-blue-400 mt-1" id="resTps">-</div>
+                    <div class="text-[10px] text-gray-500 mt-1">Tokens/sec (User)</div>
+                </div>
+
+                <!-- 4. User Throughput (NEW) -->
+                <div class="card p-4 rounded-xl border-b-4 border-orange-500 bg-gradient-to-b from-slate-800 to-slate-900">
+                    <div class="text-[10px] text-gray-400 uppercase font-bold">User Throughput</div>
+                    <div class="text-3xl font-bold text-orange-300 mt-1" id="resUserThroughput">-</div>
+                    <div class="text-[10px] text-gray-500 mt-1">Users/sec</div>
+                </div>
+
+                <!-- 5. Fleet -->
+                <div class="card p-4 rounded-xl border-b-4 border-yellow-500 bg-gradient-to-b from-slate-800 to-slate-900">
+                    <div class="text-[10px] text-gray-400 uppercase font-bold">Total Fleet</div>
+                    <div class="text-3xl font-bold text-yellow-300 mt-1" id="resTotalGpus">-</div>
+                    <div class="text-[10px] text-gray-500 mt-1" id="resReplicas">- Replicas</div>
+                </div>
+            </div>
+
+            <!-- Memory Breakdown (Collapsible) -->
+            <details class="card p-5 rounded-xl bg-slate-800/40 cursor-pointer group">
+                <summary class="flex justify-between items-center font-bold text-gray-300 uppercase tracking-wider select-none">
+                    <span class="text-xs">📦 Memory Breakdown</span>
+                    <span class="text-xs transition-transform group-open:rotate-180">▼</span>
+                </summary>
+                <div class="mt-4 space-y-3">
+                    <!-- Weight VRAM -->
+                    <div>
+                        <div class="flex justify-between text-xs mb-1">
+                            <span class="text-gray-400">Weights (Parameters)</span>
+                            <span class="text-blue-300 font-mono" id="memWeight">-</span>
+                        </div>
+                        <div class="h-2 bg-gray-700 rounded overflow-hidden">
+                            <div id="barMemWeight" class="h-full bg-blue-500 transition-all duration-500" style="width: 0%"></div>
+                        </div>
+                    </div>
+                    
+                    <!-- KV Cache VRAM -->
+                    <div>
+                        <div class="flex justify-between text-xs mb-1">
+                            <span class="text-gray-400">KV Cache (Batch)</span>
+                            <span class="text-green-300 font-mono" id="memKv">-</span>
+                        </div>
+                        <div class="h-2 bg-gray-700 rounded overflow-hidden">
+                            <div id="barMemKv" class="h-full bg-green-500 transition-all duration-500" style="width: 0%"></div>
+                        </div>
+                    </div>
+                    
+                    <!-- Activation VRAM -->
+                    <div>
+                        <div class="flex justify-between text-xs mb-1">
+                            <span class="text-gray-400">Activation (Overhead)</span>
+                            <span class="text-purple-300 font-mono" id="memActivation">-</span>
+                        </div>
+                        <div class="h-2 bg-gray-700 rounded overflow-hidden">
+                            <div id="barMemActivation" class="h-full bg-purple-500 transition-all duration-500" style="width: 0%"></div>
+                        </div>
+                    </div>
+                    
+                    <!-- Free Space -->
+                    <div>
+                        <div class="flex justify-between text-xs mb-1">
+                            <span class="text-gray-400">Free Space</span>
+                            <span class="text-gray-400 font-mono" id="memFree">-</span>
+                        </div>
+                        <div class="h-2 bg-gray-700 rounded overflow-hidden">
+                            <div id="barMemFree" class="h-full bg-gray-600 transition-all duration-500" style="width: 0%"></div>
+                        </div>
+                    </div>
+                    
+                    <!-- Total Per GPU -->
+                    <div class="pt-2 border-t border-gray-700 text-xs">
+                        <div class="flex justify-between">
+                            <span class="text-gray-400">Total per GPU</span>
+                            <span class="text-white font-mono font-bold" id="memPerGpu">-</span>
+                        </div>
+                    </div>
+                </div>
+            </details>
+
+            <!-- Latency Composition -->
+            <div class="card p-5 rounded-xl bg-slate-800/40">
+                <div class="flex justify-between items-end mb-2">
+                    <h3 class="text-xs font-bold text-gray-300 uppercase tracking-wider">Latency Composition (1 Batch)</h3>
+                    <span class="text-xs text-gray-400 font-mono" id="totalLatencyVal">Total: 0s</span>
+                </div>
+                <!-- Bar -->
+                <div class="w-full h-6 bg-slate-700 rounded flex text-[10px] font-bold text-black/80 relative overflow-hidden">
+                    <div id="barPrefill" class="h-full bg-purple-400 flex items-center justify-center transition-all duration-500 whitespace-nowrap" style="width: 0%"></div>
+                    <div id="barDecode" class="h-full bg-blue-400 flex items-center justify-center transition-all duration-500 whitespace-nowrap" style="width: 0%"></div>
+                </div>
+                <!-- Legend -->
+                <div class="flex justify-between mt-2 text-xs">
+                    <div class="text-purple-400">Compute Bound (Prefill): <span id="valPrefill" class="font-mono text-gray-300 ml-1">-</span></div>
+                    <div class="text-blue-400 text-right">Bandwidth Bound (Decode): <span id="valDecode" class="font-mono text-gray-300 ml-1">-</span></div>
+                </div>
+            </div>
+
+            <!-- Alerts (NEW) -->
+            <div id="alertsBox" class="space-y-2">
+                <!-- Dynamic alerts will be inserted here -->
+            </div>
+
+            <!-- Analysis -->
+            <div id="analysisBox" class="p-5 rounded-xl bg-blue-900/10 border border-blue-500/20 text-sm text-gray-300 space-y-2 leading-relaxed">
+                <!-- Dynamic Content -->
+            </div>
+
+            <!-- Comparison View (NEW - Initially Hidden) -->
+            <div id="comparisonView" class="hidden space-y-4">
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <!-- Saved Config -->
+                    <div class="card p-5 rounded-xl border-l-4 border-purple-500">
+                        <h3 class="text-sm font-bold text-purple-300 mb-3">📌 Saved Config</h3>
+                        <div class="space-y-2 text-xs">
+                            <div class="flex justify-between"><span class="text-gray-400">Model:</span><span id="compSavedModel" class="text-gray-300">-</span></div>
+                            <div class="flex justify-between"><span class="text-gray-400">GPU:</span><span id="compSavedGpu" class="text-gray-300">-</span></div>
+                            <div class="flex justify-between"><span class="text-gray-400">Min GPUs:</span><span id="compSavedGpus" class="font-mono text-blue-300">-</span></div>
+                            <div class="flex justify-between"><span class="text-gray-400">TTFT:</span><span id="compSavedTtft" class="font-mono text-purple-300">-</span></div>
+                            <div class="flex justify-between"><span class="text-gray-400">Gen Speed:</span><span id="compSavedSpeed" class="font-mono text-blue-300">-</span></div>
+                            <div class="flex justify-between"><span class="text-gray-400">Total Fleet:</span><span id="compSavedFleet" class="font-mono text-yellow-300">-</span></div>
+                        </div>
+                    </div>
+
+                    <!-- Current Config -->
+                    <div class="card p-5 rounded-xl border-l-4 border-emerald-500">
+                        <h3 class="text-sm font-bold text-emerald-300 mb-3">⚡ Current Config</h3>
+                        <div class="space-y-2 text-xs">
+                            <div class="flex justify-between"><span class="text-gray-400">Model:</span><span id="compCurrentModel" class="text-gray-300">-</span></div>
+                            <div class="flex justify-between"><span class="text-gray-400">GPU:</span><span id="compCurrentGpu" class="text-gray-300">-</span></div>
+                            <div class="flex justify-between"><span class="text-gray-400">Min GPUs:</span><span id="compCurrentGpus" class="font-mono text-blue-300">-</span></div>
+                            <div class="flex justify-between"><span class="text-gray-400">TTFT:</span><span id="compCurrentTtft" class="font-mono text-purple-300">-</span></div>
+                            <div class="flex justify-between"><span class="text-gray-400">Gen Speed:</span><span id="compCurrentSpeed" class="font-mono text-blue-300">-</span></div>
+                            <div class="flex justify-between"><span class="text-gray-400">Total Fleet:</span><span id="compCurrentFleet" class="font-mono text-yellow-300">-</span></div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Difference Summary -->
+                <div class="card p-5 rounded-xl bg-slate-800/60 border border-slate-700">
+                    <h3 class="text-sm font-bold text-gray-200 mb-3">📊 Difference</h3>
+                    <div class="grid grid-cols-2 md:grid-cols-3 gap-3 text-xs">
+                        <div>
+                            <span class="text-gray-400">GPU Count Diff:</span>
+                            <div id="compDiffGpus" class="text-lg font-bold text-orange-300 mt-1">-</div>
+                        </div>
+                        <div>
+                            <span class="text-gray-400">Speed Diff:</span>
+                            <div id="compDiffSpeed" class="text-lg font-bold text-cyan-300 mt-1">-</div>
+                        </div>
+                        <div>
+                            <span class="text-gray-400">Cost Diff:</span>
+                            <div id="compDiffCost" class="text-lg font-bold text-green-300 mt-1">-</div>
+                        </div>
+                    </div>
+                </div>
+
+                <button onclick="toggleComparisonView()" class="w-full p-2 rounded-lg bg-red-900/20 border border-red-500/50 text-red-300 hover:bg-red-900/40 text-sm font-bold transition-all">
+                    ✕ Close Comparison
+                </button>
+            </div>
+
+        </div>
+    </div>
+
+    <script>
+        // -- DATA --
+        const gpuSpecs = {
+            'h20':       { vram: 96, bw: 4000, tflops: 148, bus: 'nvlink', name: "H20" },
+            'h100_sxm':  { vram: 80, bw: 3350, tflops: 989, bus: 'nvlink', name: "H100 SXM" },
+            'h800':      { vram: 80, bw: 3350, tflops: 756, bus: 'nvlink', name: "H800" },
+            'h200':      { vram: 141, bw: 4500, tflops: 1457, bus: 'nvlink', name: "H200" }
+        };
+
+        const modelPresets = {
+            'deepseek_r1': { total: 671, active: 37, layers: 61, hidden: 7168, type: 'moe' },
+            'qwen_32b': { total: 32, active: 32, layers: 32, hidden: 5120, type: 'dense' }
+        };
+
+        // -- LOGIC --
+        function syncRange(id, target) { document.getElementById(target).innerText = document.getElementById(id).value; }
+        
+        function toggleMoeInputs() {
+            const isMoe = document.querySelector('input[name="archType"]:checked').value === 'moe';
+            const container = document.getElementById('activeParamContainer');
+            if (isMoe) {
+                container.classList.remove('opacity-30', 'grayscale');
+            } else {
+                container.classList.add('opacity-30', 'grayscale');
+                document.getElementById('activeParams').value = document.getElementById('totalParams').value;
+            }
+            calculate();
+        }
+
+        function applyModelPreset() {
+            const key = document.getElementById('modelSelect').value;
+            if (key === 'custom') return;
+            const m = modelPresets[key];
+            document.getElementById('totalParams').value = m.total;
+            document.getElementById('activeParams').value = m.active;
+            document.getElementById('mLayers').value = m.layers;
+            document.getElementById('mHidden').value = m.hidden;
+            const radios = document.getElementsByName('archType');
+            for(const r of radios) r.checked = (r.value === m.type);
+            toggleMoeInputs();
+        }
+
+        // Export Config to JSON (NEW)
+        function exportConfig() {
+            const config = {
+                timestamp: new Date().toISOString(),
+                model: {
+                    name: document.getElementById('modelSelect').value,
+                    totalParams: parseFloat(document.getElementById('totalParams').value),
+                    activeParams: parseFloat(document.getElementById('activeParams').value),
+                    archType: document.querySelector('input[name="archType"]:checked').value,
+                    useMla: document.getElementById('useMla').checked
+                },
+                hardware: {
+                    gpu: document.getElementById('gpuSelect').value,
+                    precision: document.getElementById('precisionSelect').value
+                },
+                workload: {
+                    batchSize: parseInt(document.getElementById('batchSize').value),
+                    inputTokens: parseInt(document.getElementById('inputTokens').value),
+                    outputTokens: parseInt(document.getElementById('outputTokens').value),
+                    targetRPS: parseFloat(document.getElementById('targetRPS').value)
+                },
+                results: {
+                    minGpus: document.getElementById('resMinGpus').innerText,
+                    ttft: document.getElementById('resTtft').innerText,
+                    genSpeed: document.getElementById('resTps').innerText,
+                    userThroughput: document.getElementById('resUserThroughput').innerText,
+                    totalFleet: document.getElementById('resTotalGpus').innerText,
+                    replicas: document.getElementById('resReplicas').innerText,
+                    efficiency: document.getElementById('effDisplay').innerText,
+                    topology: document.getElementById('topoDisplay').innerText
+                }
+            };
+            
+            const jsonString = JSON.stringify(config, null, 2);
+            const blob = new Blob([jsonString], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = `gpu-config-${new Date().getTime()}.json`;
+            link.click();
+            URL.revokeObjectURL(url);
+        }
+
+        // Save Config for Comparison (NEW)
+        let savedConfig = null;
+        function saveConfigForComparison() {
+            savedConfig = {
+                model: document.getElementById('modelSelect').value,
+                gpu: document.getElementById('gpuSelect').value,
+                precision: document.getElementById('precisionSelect').value,
+                minGpus: document.getElementById('resMinGpus').innerText,
+                ttft: document.getElementById('resTtft').innerText,
+                speed: document.getElementById('resTps').innerText,
+                fleet: document.getElementById('resTotalGpus').innerText,
+                userThroughput: document.getElementById('resUserThroughput').innerText
+            };
+            alert('✅ Configuration saved! Click "Show Comparison" to compare.');
+            document.getElementById('compareBtn').textContent = '🔀 Show Comparison (Saved ✓)';
+        }
+
+        // Toggle Comparison View (NEW)
+        function toggleComparisonView() {
+            const compView = document.getElementById('comparisonView');
+            if (compView.classList.contains('hidden')) {
+                if (!savedConfig) {
+                    alert('⚠️ Please save a configuration first!');
+                    return;
+                }
+                compView.classList.remove('hidden');
+                
+                // Populate saved config
+                document.getElementById('compSavedModel').innerText = savedConfig.model;
+                document.getElementById('compSavedGpu').innerText = savedConfig.gpu;
+                document.getElementById('compSavedGpus').innerText = savedConfig.minGpus;
+                document.getElementById('compSavedTtft').innerText = savedConfig.ttft;
+                document.getElementById('compSavedSpeed').innerText = savedConfig.speed;
+                document.getElementById('compSavedFleet').innerText = savedConfig.fleet;
+                
+                // Populate current config
+                document.getElementById('compCurrentModel').innerText = document.getElementById('modelSelect').value;
+                document.getElementById('compCurrentGpu').innerText = document.getElementById('gpuSelect').value;
+                document.getElementById('compCurrentGpus').innerText = document.getElementById('resMinGpus').innerText;
+                document.getElementById('compCurrentTtft').innerText = document.getElementById('resTtft').innerText;
+                document.getElementById('compCurrentSpeed').innerText = document.getElementById('resTps').innerText;
+                document.getElementById('compCurrentFleet').innerText = document.getElementById('resTotalGpus').innerText;
+                
+                // Calculate differences
+                const savedGpus = parseInt(savedConfig.minGpus);
+                const currentGpus = parseInt(document.getElementById('resMinGpus').innerText);
+                const gpuDiff = currentGpus - savedGpus;
+                const speedDiff = (parseInt(document.getElementById('resTps').innerText) - parseInt(savedConfig.speed));
+                const costDiff = Math.round((gpuDiff / savedGpus) * 100);
+                
+                document.getElementById('compDiffGpus').innerText = (gpuDiff > 0 ? '+' : '') + gpuDiff + ' (' + (gpuDiff > 0 ? '↑' : '↓') + ')';
+                document.getElementById('compDiffSpeed').innerText = (speedDiff > 0 ? '+' : '') + speedDiff + ' T/s (' + (speedDiff > 0 ? '↑' : '↓') + ')';
+                document.getElementById('compDiffCost').innerText = (costDiff > 0 ? '+' : '') + costDiff + '% (' + (costDiff > 0 ? '↑' : '↓') + ')';
+            } else {
+                compView.classList.add('hidden');
+            }
+        }
+
+        function calculateEfficiency(gpu, numGpus, isMoe) {
+            if (numGpus === 1) return { val: 1.0, reason: "Single GPU" };
+            let eff = 1.0;
+            let reasons = [];
+
+            // Bus Penalty
+            if (gpu.bus === 'nvlink') {
+                eff *= 0.92; 
+                reasons.push("NVLink");
+            } else {
+                eff *= 0.65; // PCIe penalty
+                reasons.push("PCIe");
+            }
+
+            // Node Penalty (Linear scaling penalty)
+            // Base penalty for crossing node boundary (8 GPUs)
+            // Plus small decay per additional GPU to simulate communication overhead scaling
+            if (numGpus > 8) {
+                const extraGpus = numGpus - 8;
+                // 0.85 base for multi-node, minus 0.5% per extra GPU
+                // e.g., 16 GPUs = 0.85 - (8 * 0.005) = 0.81
+                // e.g., 64 GPUs = 0.85 - (56 * 0.005) = 0.57 (diminishing returns)
+                const scalePenalty = Math.max(0.5, 0.85 - (extraGpus * 0.005)); 
+                eff *= scalePenalty;
+                reasons.push(`Multi-Node (x${numGpus})`);
+            }
+
+            // MoE Dispatch Penalty
+            if (isMoe && numGpus > 1) {
+                eff *= 0.93; // Expert routing overhead
+            }
+
+            return { val: eff, reason: reasons.join("+") || "Baseline" };
+        }
+
+        function calculate() {
+            const gpuKey = document.getElementById('gpuSelect').value;
+            const gpu = gpuSpecs[gpuKey];
+            const totalParams = parseFloat(document.getElementById('totalParams').value);
+            const isMoe = document.querySelector('input[name="archType"]:checked').value === 'moe';
+            let activeParams = parseFloat(document.getElementById('activeParams').value);
+            if (!isMoe) activeParams = totalParams;
+
+            const B = parseInt(document.getElementById('batchSize').value);
+            const Sin = parseInt(document.getElementById('inputTokens').value);
+            const Sout = parseInt(document.getElementById('outputTokens').value);
+            const targetRPS = parseFloat(document.getElementById('targetRPS').value);
+            const useMla = document.getElementById('useMla').checked;
+            const layers = parseInt(document.getElementById('mLayers').value);
+            const hidden = parseInt(document.getElementById('mHidden').value);
+
+            // Precision Factor (NEW) - Bytes per parameter
+            const precisionKey = document.getElementById('precisionSelect').value;
+            const precisionFactors = {
+                'bf16': 2,      // 2 bytes per param
+                'fp8': 1,       // 1 byte per param
+                'int8': 1,      // 1 byte per param
+                'int4': 0.5     // 0.5 bytes per param
+            };
+
+            // Compute Multiplier (NEW) - FP8/INT8 often 2x TFLOPS on Hopper
+            const computeFactors = {
+                'bf16': 1,
+                'fp8': 2,   
+                'int8': 2,  
+                'int4': 4   
+            };
+
+            const precisionFactor = precisionFactors[precisionKey];
+            const computeMultiplier = computeFactors[precisionKey];
+
+            const precisionNames = {
+                'bf16': 'BF16',
+                'fp8': 'FP8',
+                'int8': 'INT8',
+                'int4': 'INT4'
+            };
+            
+            document.getElementById('gpuSpecsDisplay').innerText = `${gpu.name} | ${gpu.bus.toUpperCase()}`;
+
+            // 1. VRAM (totalParams in billions, precisionFactor in bytes, result in GB)
+            const weightGB = totalParams * precisionFactor; 
+            const kvFactor = useMla ? 0.5 : 1.0;
+            const kvGB = (4 * layers * hidden * (Sin + Sout) * B * kvFactor) / 1e9;
+            const totalVram = (weightGB + kvGB) * 1.15;
+            const minGpus = Math.ceil(totalVram / gpu.vram);
+
+            // Active GPUs (User Override)
+            const customGpus = parseInt(document.getElementById('customGpus').value) || 0;
+            const activeGpus = Math.max(minGpus, customGpus);
+
+            // 2. Efficiency
+            // Use activeGpus to calculate efficiency penalty
+            const effData = calculateEfficiency(gpu, activeGpus, isMoe);
+            const efficiency = effData.val;
+
+            // 3. Latency & Speed
+            // A. Prefill (Compute-Bound): depends on total compute throughput
+            // Apply computeMultiplier for lower precision math
+            const sysTflops = (gpu.tflops * computeMultiplier) * activeGpus * efficiency;
+            const prefillOps = 2 * activeParams * 1e9 * B * Sin;
+            const tPrefill = prefillOps / (sysTflops * 1e12 * 0.7);
+
+            // B. Decode (Bandwidth-Bound): bandwidth scales with GPUs, data size with precision
+            const sysBw = gpu.bw * activeGpus * efficiency;
+            // Weight access: only the active params need to be loaded per step
+            const weightAccessGB = activeParams * precisionFactor;
+            const kvAccessGB = (4 * layers * hidden * kvFactor) / 1e9;
+            const decodeAccessSize = (weightAccessGB + kvAccessGB);
+            const tDecodeStep = decodeAccessSize / (sysBw);
+            const tDecodeTotal = tDecodeStep * Sout;
+
+            // Per User Speed (Tokens/sec) = Avg throughput across full generation
+            const speedTps = Sout / tDecodeTotal;
+
+            // Total Latency
+            const tTotal = tPrefill + tDecodeTotal;
+            const instanceRps = B / tTotal;
+
+            // Concurrency (Little's Law: C = RPS * Latency)
+            const estConcurrency = targetRPS * tTotal;
+            document.getElementById('concurrencyDisplay').innerText = `≈ ${Math.round(estConcurrency)} Concurrent`;
+
+            // 4. Fleet
+            let reqReplicas = Math.ceil(targetRPS / instanceRps);
+            if (!isFinite(reqReplicas)) reqReplicas = 1;
+            const fleetSize = reqReplicas * activeGpus;
+
+            // UI Updates
+            document.getElementById('topoDisplay').innerText = activeGpus > 8 ? "Multi-Node Cluster" : "Single Node";
+            document.getElementById('effDisplay').innerText = Math.round(efficiency * 100) + "%";
+            document.getElementById('strategyDisplay').innerText = isMoe ? "MoE (Expert Parallel)" : "Dense (Tensor Parallel)";
+
+            // Show Active GPUs if different from Min
+            if (activeGpus > minGpus) {
+                document.getElementById('resMinGpus').innerHTML = `<span class="text-yellow-400">${activeGpus}</span> <span class="text-xs text-gray-500">(Min: ${minGpus})</span>`;
+            } else {
+                document.getElementById('resMinGpus').innerText = minGpus;
+            }
+            
+            // TTFT Formatting
+            const msTtft = tPrefill * 1000;
+            document.getElementById('resTtft').innerText = msTtft > 1000 ? (msTtft/1000).toFixed(2) + " s" : msTtft.toFixed(0) + " ms";
+            
+            // SPEED Formatting (The Restored Metric)
+            document.getElementById('resTps').innerText = Math.round(speedTps);
+            
+            // USER THROUGHPUT = RPS × Batch Size (NEW)
+            const userThroughput = targetRPS * B;
+            document.getElementById('resUserThroughput').innerText = Math.round(userThroughput);
+
+            document.getElementById('resTotalGpus').innerText = fleetSize;
+            document.getElementById('resReplicas').innerText = `${reqReplicas} Replicas`;
+
+            // Memory Breakdown (Per GPU)
+            const memWeightTotal = weightGB;
+            const memKvTotal = kvGB;
+            const memOverheadTotal = (weightGB + kvGB) * 0.15;
+            
+            // Distribute across Active GPUs
+            const memWeight = memWeightTotal / activeGpus;
+            const memKv = memKvTotal / activeGpus;
+            const memActivation = memOverheadTotal / activeGpus;
+            
+            const memPerGpu = memWeight + memKv + memActivation;
+            const memFree = gpu.vram - memPerGpu;
+            const memFreePercent = Math.max(0, (memFree / gpu.vram) * 100);
+            
+            // Update memory display
+            document.getElementById('memWeight').innerText = memWeight.toFixed(1) + " GB";
+            document.getElementById('memKv').innerText = memKv.toFixed(1) + " GB";
+            document.getElementById('memActivation').innerText = memActivation.toFixed(1) + " GB";
+            document.getElementById('memFree').innerText = Math.max(0, memFree).toFixed(1) + " GB";
+            document.getElementById('memPerGpu').innerText = memPerGpu.toFixed(1) + " GB / " + gpu.vram + " GB";
+            
+            // Update memory bars (as percentage of GPU VRAM)
+            const memWeightPct = (memWeight / gpu.vram) * 100;
+            const memKvPct = (memKv / gpu.vram) * 100;
+            const memActivationPct = (memActivation / gpu.vram) * 100;
+            const memFreePct = memFreePercent;
+            
+            document.getElementById('barMemWeight').style.width = Math.min(100, memWeightPct) + "%";
+            document.getElementById('barMemKv').style.width = Math.min(100, memKvPct) + "%";
+            document.getElementById('barMemActivation').style.width = Math.min(100, memActivationPct) + "%";
+            document.getElementById('barMemFree').style.width = Math.min(100, memFreePct) + "%";
+
+            // Bars
+            const pctPrefill = (tPrefill / tTotal) * 100;
+            document.getElementById('barPrefill').style.width = pctPrefill + "%";
+            document.getElementById('barPrefill').innerText = pctPrefill > 15 ? "Prefill" : "";
+            document.getElementById('barDecode').style.width = (100 - pctPrefill) + "%";
+            document.getElementById('barDecode').innerText = (100 - pctPrefill) > 15 ? "Decode" : "";
+            
+            document.getElementById('valPrefill').innerText = msTtft.toFixed(0) + " ms";
+            document.getElementById('valDecode').innerText = (tDecodeTotal * 1000).toFixed(0) + " ms";
+            document.getElementById('totalLatencyVal').innerText = "Total: " + tTotal.toFixed(2) + "s";
+
+            // Alerts (NEW)
+            const alertsBox = document.getElementById('alertsBox');
+            let alertsHtml = "";
+            
+            // Red Alert: VRAM Overflow
+            if (memPerGpu > gpu.vram) {
+                alertsHtml += `<div class="p-4 rounded-xl bg-red-900/20 border border-red-500/50 text-sm text-red-300">
+                    <span class="font-bold">🚨 VRAM Overflow:</span> Required ${memPerGpu.toFixed(1)}GB exceeds GPU capacity (${gpu.vram}GB). Need at least ${minGpus} GPUs.
+                </div>`;
+            }
+            
+            // Yellow Alert: Low Efficiency
+            if (efficiency < 0.5) {
+                alertsHtml += `<div class="p-4 rounded-xl bg-yellow-900/20 border border-yellow-500/50 text-sm text-yellow-300">
+                    <span class="font-bold">⚠️ Low Efficiency:</span> Efficiency is ${(efficiency*100).toFixed(0)}% (${effData.reason}). Consider reducing cluster size or using single-node setup.
+                </div>`;
+            }
+            
+            // Green Tip: Optimized Config
+            if (efficiency > 0.8 && memFreePercent > 10) {
+                alertsHtml += `<div class="p-4 rounded-xl bg-green-900/20 border border-green-500/50 text-sm text-green-300">
+                    <span class="font-bold">✅ Optimized Config:</span> Configuration is well-balanced with ${(efficiency*100).toFixed(0)}% efficiency and ${memFreePercent.toFixed(0)}% free VRAM.
+                </div>`;
+            }
+            
+            alertsBox.innerHTML = alertsHtml;
+
+            // Analysis
+            const box = document.getElementById('analysisBox');
+            let html = "";
+            
+            if (gpuKey === 'h20' && isMoe) {
+                html += `<p class="text-green-400">🚀 <b>H20 + MoE Sweet Spot:</b></p>`;
+                html += `<p>High Bandwidth (${gpu.bw}GB/s) drives <b>${Math.round(speedTps)} Tokens/s</b> speed, while MoE keeps Active Params low (${activeParams}B) to mitigate H20's compute weakness.</p>`;
+            } else if (gpuKey === 'h20' && !isMoe) {
+                html += `<p class="text-yellow-400">⚠️ <b>Warning:</b> Dense model on H20 results in high TTFT (${(tPrefill).toFixed(1)}s).</p>`;
+            } else {
+                html += `<p><b>Balanced Configuration:</b> ${activeGpus}x ${gpu.name} delivers <b>${Math.round(speedTps)} T/s</b>.</p>`;
+            }
+            html += `<p class="text-xs text-gray-500 mt-1">Calculated with Batch=${B}, Precision=${precisionNames[precisionKey]} (${precisionFactor}B/param), efficiency=${(efficiency*100).toFixed(0)}% (${effData.reason}).</p>`;
+            
+            box.innerHTML = html;
+        }
+
+        applyModelPreset();
+    </script>
+</body>
+</html>
